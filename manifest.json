@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DareToSign",
-  "version": "1.0.32",
+  "version": "1.0.34",
   "description": "AI-powered Terms & Conditions analyzer. Spot risky clauses before you click Agree.",
   "permissions": ["activeTab", "scripting", "storage", "alarms"],
   "host_permissions": ["<all_urls>"],

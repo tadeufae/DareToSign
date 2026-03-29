@@ -35,7 +35,6 @@ This configures `pre-commit` to run `zsh scripts/test.sh`.
 ## Workflow
 
 - Use `zsh scripts/test.sh` before commits or releases
-- Use `./scripts/deploy.sh` to run checks and push the current branch
 - Increment `manifest.json` version on every subsequent change: `1.0.1`, `1.0.2`, `1.0.3`, and so on
 
 ## Project Structure
