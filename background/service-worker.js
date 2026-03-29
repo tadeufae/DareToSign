@@ -8,7 +8,8 @@ const SESSION_KEYS = {
 };
 
 const LOCAL_KEYS = {
-  scanHistory: "scanHistory"
+  scanHistory: "scanHistory",
+  acceptedTerms: "acceptedTerms"
 };
 
 const DEFAULT_SETTINGS = {
@@ -65,6 +66,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === "ACCEPT_ANALYSIS") {
+    void acceptAnalysisForTab(message.tabId ?? sender.tab?.id).then(sendResponse);
+    return true;
+  }
+
   if (message.type === "ANALYZE_URL") {
     void startAnalysisJob(message, sender.tab?.id).then(sendResponse);
     return true;
@@ -90,7 +96,8 @@ async function handleLinksFound(rawLinks, tabId) {
 
   const links = dedupeLinks(rawLinks);
   await chrome.storage.session.set({ [SESSION_KEYS.links(tabId)]: links });
-  await updateBadge(tabId, links.length);
+  const visibleLinkCount = await getUnacceptedLinkCount(links);
+  await updateBadge(tabId, visibleLinkCount);
 
   const settings = await chrome.storage.local.get(DEFAULT_SETTINGS);
   if (settings.autoScan && links.length > 0) {
@@ -180,6 +187,9 @@ async function runAnalysisJob(message, sourceTabId) {
     const html = await response.text();
     reportProgress("Extracting readable legal text…", 32);
     const text = extractText(html);
+    const normalizedUrl = normalizeDocumentUrl(message.url);
+    const documentKey = getDocumentKey(normalizedUrl);
+    const contentHash = await hashText(text);
     reportProgress("Chunking document for AI review…", 42);
     const chunks = chunkText(text, 12000);
     const findings = await analyzeDocumentChunks(chunks, {
@@ -200,13 +210,17 @@ async function runAnalysisJob(message, sourceTabId) {
       progress: 100,
       error: false,
       url: message.url,
+      normalizedUrl,
+      documentKey,
+      contentHash,
       findings,
       scannedAt: Date.now(),
       meta: {
         sensitivity: settings.sensitivity,
         model: settings.model,
         chunkCount: chunks.length,
-        textLength: text.length
+        textLength: text.length,
+        accepted: await isAcceptedVersion(documentKey, contentHash)
       }
     };
 
@@ -216,6 +230,9 @@ async function runAnalysisJob(message, sourceTabId) {
       url: message.url,
       sourceTabId,
       text,
+      normalizedUrl,
+      documentKey,
+      contentHash,
       findings,
       settings,
       chunkCount: chunks.length,
@@ -256,6 +273,41 @@ async function clearTabPageState(tabId) {
 async function clearTabState(tabId) {
   await chrome.storage.session.remove([SESSION_KEYS.links(tabId), SESSION_KEYS.analysis(tabId)]);
   await chrome.action.setBadgeText({ text: "", tabId });
+}
+
+async function acceptAnalysisForTab(tabId) {
+  const analysis = await getAnalysisState(tabId);
+  if (!analysis || analysis.status !== "complete" || !analysis.documentKey || !analysis.contentHash) {
+    return { error: true, message: "There is no completed analysis to accept for this tab." };
+  }
+
+  const stored = await chrome.storage.local.get(LOCAL_KEYS.acceptedTerms);
+  const acceptedTerms = stored[LOCAL_KEYS.acceptedTerms] ?? {};
+  acceptedTerms[analysis.documentKey] = {
+    contentHash: analysis.contentHash,
+    url: analysis.url,
+    normalizedUrl: analysis.normalizedUrl,
+    acceptedAt: Date.now()
+  };
+
+  await chrome.storage.local.set({ [LOCAL_KEYS.acceptedTerms]: acceptedTerms });
+  await mergeAnalysisState(
+    tabId,
+    analysis.requestId,
+    {
+      meta: {
+        ...(analysis.meta ?? {}),
+        accepted: true
+      }
+    },
+    "Accepted this terms version.",
+    "info"
+  );
+
+  const links = await getLinksForTab(tabId);
+  await updateBadge(tabId, await getUnacceptedLinkCount(links));
+
+  return { ok: true };
 }
 
 function dedupeLinks(links) {
@@ -349,10 +401,22 @@ async function mergeAnalysisState(tabId, requestId, patch, logMessage, level, ti
   });
 }
 
-async function persistScanHistory({ url, sourceTabId, text, findings, settings, chunkCount, textLength, scannedAt }) {
-  const normalizedUrl = normalizeDocumentUrl(url);
-  const documentKey = getDocumentKey(normalizedUrl);
-  const contentHash = await hashText(text);
+async function persistScanHistory({
+  url,
+  sourceTabId,
+  text,
+  normalizedUrl: normalizedUrlInput,
+  documentKey: documentKeyInput,
+  contentHash: contentHashInput,
+  findings,
+  settings,
+  chunkCount,
+  textLength,
+  scannedAt
+}) {
+  const normalizedUrl = normalizedUrlInput ?? normalizeDocumentUrl(url);
+  const documentKey = documentKeyInput ?? getDocumentKey(normalizedUrl);
+  const contentHash = contentHashInput ?? (await hashText(text));
   const findingsHash = await hashText(JSON.stringify(findings));
   const stored = await chrome.storage.local.get(LOCAL_KEYS.scanHistory);
   const history = stored[LOCAL_KEYS.scanHistory] ?? {};
@@ -414,4 +478,33 @@ async function hashText(text) {
   const bytes = new TextEncoder().encode(text);
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+async function getUnacceptedLinkCount(links) {
+  if (!links.length) {
+    return 0;
+  }
+
+  const stored = await chrome.storage.local.get([LOCAL_KEYS.scanHistory, LOCAL_KEYS.acceptedTerms]);
+  const history = stored[LOCAL_KEYS.scanHistory] ?? {};
+  const acceptedTerms = stored[LOCAL_KEYS.acceptedTerms] ?? {};
+
+  return links.filter((link) => {
+    const normalizedUrl = normalizeDocumentUrl(link.href);
+    const documentKey = getDocumentKey(normalizedUrl);
+    const latestEntry = history[documentKey]?.[0];
+    const acceptedEntry = acceptedTerms[documentKey];
+
+    if (!latestEntry || !acceptedEntry) {
+      return true;
+    }
+
+    return latestEntry.contentHash !== acceptedEntry.contentHash;
+  }).length;
+}
+
+async function isAcceptedVersion(documentKey, contentHash) {
+  const stored = await chrome.storage.local.get(LOCAL_KEYS.acceptedTerms);
+  const acceptedTerms = stored[LOCAL_KEYS.acceptedTerms] ?? {};
+  return acceptedTerms[documentKey]?.contentHash === contentHash;
 }

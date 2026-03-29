@@ -5,6 +5,9 @@ const els = {
   resultsRoot: document.getElementById("results-root"),
   summaryScore: document.getElementById("summary-score"),
   analysisMeta: document.getElementById("analysis-meta"),
+  acceptShell: document.getElementById("accept-shell"),
+  acceptButton: document.getElementById("accept-button"),
+  acceptStatus: document.getElementById("accept-status"),
   progressPanel: document.getElementById("progress-panel"),
   progressPercent: document.getElementById("progress-percent"),
   progressFill: document.getElementById("progress-fill"),
@@ -12,7 +15,6 @@ const els = {
   progressWait: document.getElementById("progress-wait"),
   progressDetails: document.getElementById("progress-details"),
   progressLog: document.getElementById("progress-log"),
-  refreshLinks: document.getElementById("refresh-links"),
   openOptions: document.getElementById("open-options")
 };
 
@@ -23,6 +25,7 @@ let activeRequestId = null;
 let progressEntries = [];
 let waitTimerId = null;
 let waitStartedAt = null;
+let currentAnalysis = null;
 
 void init();
 
@@ -32,12 +35,12 @@ async function init() {
 }
 
 function bindEvents() {
-  els.refreshLinks.addEventListener("click", () => {
-    void refreshLinks();
-  });
-
   els.analyzeButton.addEventListener("click", () => {
     void analyzeSelection();
+  });
+
+  els.acceptButton.addEventListener("click", () => {
+    void acceptCurrentAnalysis();
   });
 
   els.openOptions.addEventListener("click", () => {
@@ -67,6 +70,7 @@ async function refreshLinks() {
   setStatus("Checking this page…");
   renderResults([], { hasScanResult: false });
   els.analysisMeta.textContent = "";
+  hideAcceptance();
 
   const tab = await getActiveTab();
   if (!tab?.id) {
@@ -125,6 +129,7 @@ async function analyzeSelection() {
   els.analyzeButton.textContent = "Analyzing…";
   setStatus("Fetching document and calling OpenAI…");
   els.analysisMeta.textContent = "";
+  hideAcceptance();
 
   try {
     const response = await chrome.runtime.sendMessage({
@@ -145,7 +150,7 @@ async function analyzeSelection() {
     updateProgressUi(100, message, "error");
     renderResults([], { hasScanResult: false });
     els.analyzeButton.disabled = currentLinks.length === 0;
-    els.analyzeButton.textContent = "Analyze selected link";
+    els.analyzeButton.textContent = "Analyze Terms Found";
   }
 }
 
@@ -166,7 +171,11 @@ function renderLinks(links) {
         <input type="radio" name="selected-link" ${link.href === selectedUrl ? "checked" : ""} />
         <div class="link-copy">
           <p class="link-title">${escapeHtml(link.text || "Untitled document")}</p>
-          <p class="link-url">${escapeHtml(link.href)}</p>
+          <details class="link-url-shell">
+            <summary class="link-url-toggle">Show link</summary>
+            <p class="link-url-full">${escapeHtml(link.href)}</p>
+          </details>
+          <p class="link-url-preview" title="${escapeHtml(link.href)}">${escapeHtml(link.href)}</p>
         </div>
       </div>
     `;
@@ -183,6 +192,7 @@ function renderLinks(links) {
 function renderResults(findings, options = {}) {
   const { hasScanResult = true } = options;
   els.resultsRoot.innerHTML = "";
+  hideAcceptance();
 
   if (!findings.length) {
     if (hasScanResult) {
@@ -192,8 +202,8 @@ function renderResults(findings, options = {}) {
       return;
     }
 
-    els.summaryScore.textContent = "No scan yet.";
-    els.resultsRoot.innerHTML = '<div class="empty-state">Run a scan to see grouped clause findings here.</div>';
+    els.summaryScore.textContent = "No analysis yet.";
+    els.resultsRoot.innerHTML = '<div class="empty-state">Run an analysis to see grouped clause findings here.</div>';
     return;
   }
 
@@ -284,7 +294,7 @@ function updateProgressUi(progress, status, level = "info", timestamp = Date.now
   if (safeProgress >= 100) {
     stopWaitTimer();
     els.analyzeButton.disabled = currentLinks.length === 0;
-    els.analyzeButton.textContent = "Analyze selected link";
+    els.analyzeButton.textContent = "Analyze Terms Found";
   }
 }
 
@@ -307,13 +317,16 @@ async function restoreAnalysisState(tabId) {
 
   if (!analysis) {
     activeRequestId = null;
+    currentAnalysis = null;
     progressEntries = [];
     els.progressPanel.hidden = true;
     stopWaitTimer();
+    hideAcceptance();
     return false;
   }
 
   activeRequestId = analysis.requestId ?? null;
+  currentAnalysis = analysis.status === "complete" ? analysis : null;
   showProgressPanel();
   progressEntries = Array.isArray(analysis.log)
     ? analysis.log.map((entry) => ({ status: entry.message, level: entry.level, timestamp: entry.timestamp }))
@@ -326,26 +339,30 @@ async function restoreAnalysisState(tabId) {
   );
 
   if (analysis.status === "running") {
+    hideAcceptance();
     els.analyzeButton.disabled = true;
     els.analyzeButton.textContent = "Analyzing…";
     setStatus("Analysis running in the background for this tab.");
     return true;
   }
 
+  hideAcceptance();
   els.analyzeButton.disabled = currentLinks.length === 0;
-  els.analyzeButton.textContent = "Analyze selected link";
+  els.analyzeButton.textContent = "Analyze Terms Found";
 
   if (analysis.status === "complete") {
     renderResults(analysis.findings ?? [], { hasScanResult: true });
     if (analysis.meta) {
       els.analysisMeta.textContent = `Model: ${analysis.meta.model} · Sensitivity: ${analysis.meta.sensitivity} · Chunks: ${analysis.meta.chunkCount}`;
     }
+    renderAcceptance(analysis);
     setStatus("Showing the latest completed analysis for this tab.");
     return true;
   }
 
   if (analysis.status === "error") {
     renderResults([], { hasScanResult: false });
+    hideAcceptance();
     setStatus(analysis.message || "Analysis failed.");
     return true;
   }
@@ -417,6 +434,47 @@ function renderWaitTimer() {
 
   const elapsedSeconds = Math.max(0, Math.floor((Date.now() - waitStartedAt) / 1000));
   els.progressWait.textContent = `Waiting for model response: ${elapsedSeconds}s`;
+}
+
+function renderAcceptance(analysis) {
+  els.acceptShell.hidden = false;
+  els.acceptShell.style.display = "grid";
+  const isAccepted = Boolean(analysis.meta?.accepted);
+  els.acceptButton.disabled = isAccepted;
+  els.acceptButton.textContent = isAccepted ? "Accepted: this exact version" : "That's fine, I don't mind";
+  els.acceptStatus.textContent = isAccepted
+    ? "You already accepted this exact terms version."
+    : "Accept this exact version so DareToSign stops flagging it again.";
+}
+
+function hideAcceptance() {
+  els.acceptShell.hidden = true;
+  els.acceptShell.style.display = "none";
+  els.acceptButton.disabled = false;
+  els.acceptButton.textContent = "That's fine, I don't mind";
+  els.acceptStatus.textContent = "";
+}
+
+async function acceptCurrentAnalysis() {
+  if (!currentAnalysis || currentAnalysis.status !== "complete" || !currentTabId) {
+    return;
+  }
+
+  els.acceptButton.disabled = true;
+  els.acceptStatus.textContent = "Saving acceptance locally…";
+
+  const response = await chrome.runtime.sendMessage({
+    type: "ACCEPT_ANALYSIS",
+    tabId: currentTabId
+  });
+
+  if (response?.error) {
+    els.acceptButton.disabled = false;
+    els.acceptStatus.textContent = response.message || "Could not save acceptance.";
+    return;
+  }
+
+  await restoreAnalysisState(currentTabId);
 }
 
 function escapeHtml(value) {

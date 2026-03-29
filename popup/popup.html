@@ -29,19 +29,18 @@
         </div>
       </section>
 
-      <section class="panel">
-        <div class="section-head">
+      <section class="panel compact-panel">
+        <div class="compact-head">
           <div>
-            <p class="label">Detected Pages</p>
-            <p class="hint">Choose a legal document from this tab.</p>
+            <p class="label">Terms Found</p>
+            <p class="hint">Choose a document from this tab.</p>
           </div>
-          <button id="refresh-links" class="ghost-button" type="button">Refresh</button>
         </div>
-        <div id="link-list" class="link-list"></div>
+        <div id="link-list" class="link-list compact-link-list"></div>
       </section>
 
       <section class="panel controls">
-        <button id="analyze-button" class="primary-button" type="button" disabled>Analyze selected link</button>
+        <button id="analyze-button" class="primary-button" type="button" disabled>Analyze Terms Found</button>
         <p id="analysis-meta" class="hint"></p>
         <div id="progress-panel" class="progress-panel" hidden>
           <div class="progress-head">
@@ -64,8 +63,12 @@
         <div class="section-head">
           <div>
             <p class="label">Risk Review</p>
-            <p id="summary-score" class="summary-score">No scan yet.</p>
+            <p id="summary-score" class="summary-score">No analysis yet.</p>
           </div>
+        </div>
+        <div id="accept-shell" class="accept-shell" hidden>
+          <button id="accept-button" class="ghost-button accept-button" type="button">That's fine, I don't mind</button>
+          <p id="accept-status" class="hint"></p>
         </div>
         <div id="results-root" class="results-root"></div>
       </section>
