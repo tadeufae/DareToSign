@@ -1,6 +1,9 @@
 import { extractText } from "../utils/extractor.js";
-import { chunkText } from "../utils/chunker.js";
-import { analyzeDocumentChunks } from "../utils/openai.js";
+import { analyzeCombinedDocuments } from "../utils/openai.js";
+
+const DOCUMENT_FETCH_TIMEOUT_MS = 30_000;
+const MAX_DOCUMENT_CHARS = 16_000;
+const MAX_TOTAL_ANALYSIS_CHARS = 48_000;
 
 const SESSION_KEYS = {
   links: (tabId) => `tab:${tabId}:links`,
@@ -14,18 +17,26 @@ const LOCAL_KEYS = {
 
 const DEFAULT_SETTINGS = {
   apiKey: "",
-  model: "gpt-4o-mini",
+  model: "gpt-4.1-mini",
   sensitivity: "balanced",
   autoScan: false,
   showInlineBadges: true,
-  language: "English"
+  language: "English",
+  debugMode: false
 };
 
-const PUBLIC_SETTINGS_KEYS = ["model", "sensitivity", "autoScan", "showInlineBadges", "language"];
+const PUBLIC_SETTINGS_KEYS = ["model", "sensitivity", "autoScan", "showInlineBadges", "language", "debugMode"];
 
 chrome.runtime.onInstalled.addListener(async () => {
   const current = await chrome.storage.local.get(DEFAULT_SETTINGS);
-  await chrome.storage.local.set({ ...DEFAULT_SETTINGS, ...current });
+  await chrome.storage.local.set({
+    ...DEFAULT_SETTINGS,
+    ...current,
+    model:
+      !current.model || ["gpt-4o-mini", "gpt-5-mini", "gpt-5-nano"].includes(current.model)
+        ? DEFAULT_SETTINGS.model
+        : current.model
+  });
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -101,15 +112,50 @@ async function handleLinksFound(rawLinks, tabId) {
 
   const settings = await chrome.storage.local.get(DEFAULT_SETTINGS);
   if (settings.autoScan && links.length > 0) {
-    await chrome.storage.session.set({
-      [SESSION_KEYS.analysis(tabId)]: {
-        status: "ready",
-        progress: 0,
-        suggestedUrl: links[0].href,
-        findings: [],
-        log: []
+    const targetUrls = links.map((link) => link.href);
+    const currentAnalysis = await getAnalysisState(tabId);
+    const shouldStartAutoAnalysis =
+      currentAnalysis?.status !== "running" &&
+      !(
+        currentAnalysis?.status === "complete" &&
+        JSON.stringify(currentAnalysis.urls ?? [currentAnalysis.url].filter(Boolean)) ===
+          JSON.stringify(targetUrls)
+      ) &&
+      !(
+        currentAnalysis?.status === "ready" &&
+        JSON.stringify(currentAnalysis.suggestedUrls ?? [currentAnalysis.suggestedUrl].filter(Boolean)) ===
+          JSON.stringify(targetUrls)
+      );
+
+    if (shouldStartAutoAnalysis) {
+      if (settings.apiKey) {
+        await startAnalysisJob(
+          {
+            urls: targetUrls,
+            tabId,
+            requestId: crypto.randomUUID(),
+            autoTriggered: true
+          },
+          tabId
+        );
+      } else {
+        await chrome.storage.session.set({
+          [SESSION_KEYS.analysis(tabId)]: {
+            status: "ready",
+            progress: 0,
+            suggestedUrls: targetUrls,
+            findings: [],
+            log: [
+              {
+                message: "Auto-scan is on, but an OpenAI API key is still required.",
+                level: "error",
+                timestamp: Date.now()
+              }
+            ]
+          }
+        });
       }
-    });
+    }
   }
 }
 
@@ -137,17 +183,23 @@ async function startAnalysisJob(message, senderTabId) {
     return { error: true, message: "Could not determine which tab this scan belongs to." };
   }
 
+  const urls = Array.isArray(message.urls) && message.urls.length > 0 ? dedupeUrlList(message.urls) : [message.url].filter(Boolean);
+  if (urls.length === 0) {
+    return { error: true, message: "No legal document URLs were provided for analysis." };
+  }
+
   const requestId = message.requestId || crypto.randomUUID();
   const initialState = {
     requestId,
     sourceTabId,
-    url: message.url,
+    url: urls[0],
+    urls,
     status: "running",
     progress: 2,
     findings: [],
     log: [
       {
-        message: "Background analysis queued.",
+        message: message.autoTriggered ? "Auto-analysis queued." : "Background analysis queued.",
         level: "info",
         timestamp: Date.now()
       }
@@ -156,7 +208,7 @@ async function startAnalysisJob(message, senderTabId) {
   };
 
   await chrome.storage.session.set({ [SESSION_KEYS.analysis(sourceTabId)]: initialState });
-  void runAnalysisJob({ ...message, requestId }, sourceTabId);
+  void runAnalysisJob({ ...message, requestId, urls }, sourceTabId);
 
   return { ok: true, requestId };
 }
@@ -166,42 +218,129 @@ async function runAnalysisJob(message, sourceTabId) {
 
   try {
     const settings = { ...DEFAULT_SETTINGS, ...(await chrome.storage.local.get(DEFAULT_SETTINGS)) };
+    debugLog(settings, "analysis:start", {
+      requestId: message.requestId,
+      sourceTabId,
+      urlCount: message.urls.length,
+      urls: message.urls
+    });
+
     if (!settings.apiKey) {
       throw new Error("Add your OpenAI API key in the extension settings first.");
     }
 
-    reportProgress("Preparing document fetch…", 8);
+    reportProgress(
+      message.urls.length > 1 ? `Fetching ${message.urls.length} legal documents…` : "Fetching legal document…",
+      10
+    );
 
-    const response = await fetch(message.url, {
-      redirect: "follow",
-      headers: {
-        Accept: "text/html,application/xhtml+xml"
-      }
-    });
+    const preparedDocuments = await Promise.all(
+      message.urls.map(async (url, index) => {
+        const html = await fetchDocumentHtml(url);
+        const extractedText = extractText(html);
+        const text = trimDocumentText(extractedText, MAX_DOCUMENT_CHARS);
+        const normalizedUrl = normalizeDocumentUrl(url);
+        const documentKey = getDocumentKey(normalizedUrl);
+        const contentHash = await hashText(extractedText);
 
-    if (!response.ok) {
-      throw new Error(`Fetch failed with status ${response.status}.`);
+        return {
+          index,
+          title: `Legal document ${index + 1}`,
+          url,
+          normalizedUrl,
+          documentKey,
+          contentHash,
+          text,
+          textLength: extractedText.length,
+          chunkCount: 1
+        };
+      })
+    );
+
+    debugLog(settings, "analysis:documents-prepared", preparedDocuments.map((document) => ({
+      url: document.url,
+      normalizedUrl: document.normalizedUrl,
+      textLength: document.textLength,
+      trimmedLength: document.text.length
+    })));
+
+    reportProgress(
+      message.urls.length > 1 ? `Fetched and extracted ${message.urls.length} legal documents.` : "Fetched and extracted legal document.",
+      36
+    );
+
+    const preparedDocumentsForAnalysis = limitDocumentsForCombinedAnalysis(preparedDocuments, MAX_TOTAL_ANALYSIS_CHARS);
+    if (preparedDocumentsForAnalysis.some((document) => document.text.length < document.textLength)) {
+      reportProgress("Trimmed long legal documents to keep the combined review responsive.", 40);
     }
 
-    reportProgress("Document received from target site.", 22);
-    const html = await response.text();
-    reportProgress("Extracting readable legal text…", 32);
-    const text = extractText(html);
-    const normalizedUrl = normalizeDocumentUrl(message.url);
-    const documentKey = getDocumentKey(normalizedUrl);
-    const contentHash = await hashText(text);
-    reportProgress("Chunking document for AI review…", 42);
-    const chunks = chunkText(text, 12000);
-    const findings = await analyzeDocumentChunks(chunks, {
-      apiKey: settings.apiKey,
-      model: settings.model,
-      sensitivity: settings.sensitivity,
-      language: settings.language
-    }, (progressMessage, progressValue) => {
-      reportProgress(progressMessage, progressValue);
-    });
+    debugLog(settings, "analysis:documents-for-openai", preparedDocumentsForAnalysis.map((document) => ({
+      url: document.url,
+      sentChars: document.text.length,
+      originalChars: document.textLength
+    })));
+
+    reportProgress("Preparing one combined AI review…", 44);
+    const allFindings = await analyzeCombinedDocuments(
+      preparedDocumentsForAnalysis.map((document) => ({
+        title: document.title,
+        url: document.url,
+        text: document.text
+      })),
+      {
+        apiKey: settings.apiKey,
+        model: settings.model,
+        sensitivity: settings.sensitivity,
+        language: settings.language
+      },
+      (progressMessage, progressValue) => {
+        reportProgress(progressMessage, Math.min(94, progressValue));
+      }
+    );
+
+    const findingsByDocument = new Map(
+      preparedDocuments.map((document) => [document.normalizedUrl, []])
+    );
+
+    for (const finding of allFindings) {
+      const normalizedFindingUrl = normalizeDocumentUrl(finding.document_url ?? "");
+      if (findingsByDocument.has(normalizedFindingUrl)) {
+        findingsByDocument.get(normalizedFindingUrl).push(finding);
+      }
+    }
+
+    const analyzedDocuments = preparedDocuments.map((document) => ({
+      url: document.url,
+      normalizedUrl: document.normalizedUrl,
+      documentKey: document.documentKey,
+      contentHash: document.contentHash,
+      textLength: document.textLength,
+      chunkCount: document.chunkCount,
+      findings: findingsByDocument.get(document.normalizedUrl) ?? []
+    }));
+
+    const scannedAt = Date.now();
+
+    for (const document of preparedDocuments) {
+      await persistScanHistory({
+        url: document.url,
+        sourceTabId,
+        text: document.text,
+        normalizedUrl: document.normalizedUrl,
+        documentKey: document.documentKey,
+        contentHash: document.contentHash,
+        findings: findingsByDocument.get(document.normalizedUrl) ?? [],
+        settings,
+        chunkCount: document.chunkCount,
+        textLength: document.textLength,
+        scannedAt
+      });
+    }
 
     reportProgress("Compiling findings for the popup…", 96);
+
+    const primaryDocument = analyzedDocuments[0];
+    const combinedContentHash = await hashText(analyzedDocuments.map((doc) => `${doc.documentKey}:${doc.contentHash}`).join("|"));
 
     const payload = {
       requestId: message.requestId,
@@ -209,38 +348,43 @@ async function runAnalysisJob(message, sourceTabId) {
       status: "complete",
       progress: 100,
       error: false,
-      url: message.url,
-      normalizedUrl,
-      documentKey,
-      contentHash,
-      findings,
+      url: primaryDocument.url,
+      urls: analyzedDocuments.map((doc) => doc.url),
+      normalizedUrl: primaryDocument.normalizedUrl,
+      documentKey: primaryDocument.documentKey,
+      contentHash: combinedContentHash,
+      findings: allFindings,
+      documents: analyzedDocuments,
       scannedAt: Date.now(),
       meta: {
         sensitivity: settings.sensitivity,
         model: settings.model,
-        chunkCount: chunks.length,
-        textLength: text.length,
-        accepted: await isAcceptedVersion(documentKey, contentHash)
+        chunkCount: 1,
+        textLength: analyzedDocuments.reduce((total, doc) => total + doc.textLength, 0),
+        documentCount: analyzedDocuments.length,
+        accepted: analyzedDocuments.length === 1
+          ? await isAcceptedVersion(primaryDocument.documentKey, primaryDocument.contentHash)
+          : false
       }
     };
 
+    debugLog(settings, "analysis:complete", {
+      requestId: message.requestId,
+      findingCount: allFindings.length,
+      documentCount: analyzedDocuments.length,
+      model: settings.model
+    });
+
     await mergeAnalysisState(sourceTabId, message.requestId, payload, null, "info");
     reportProgress("Review complete.", 100);
-    await persistScanHistory({
-      url: message.url,
-      sourceTabId,
-      text,
-      normalizedUrl,
-      documentKey,
-      contentHash,
-      findings,
-      settings,
-      chunkCount: chunks.length,
-      textLength: text.length,
-      scannedAt: payload.scannedAt
-    });
   } catch (error) {
     const messageText = error instanceof Error ? error.message : "Unknown analysis error.";
+    const settings = { ...DEFAULT_SETTINGS, ...(await chrome.storage.local.get(DEFAULT_SETTINGS)) };
+    debugLog(settings, "analysis:error", {
+      requestId: message.requestId,
+      sourceTabId,
+      message: messageText
+    });
     reportProgress(`Analysis failed: ${messageText}`, 100, "error");
     await mergeAnalysisState(
       sourceTabId,
@@ -332,6 +476,10 @@ function dedupeLinks(links) {
   }
 
   return result;
+}
+
+function dedupeUrlList(urls) {
+  return Array.from(new Set(urls.filter(Boolean)));
 }
 
 function pickPublicSettings(settings) {
@@ -445,6 +593,94 @@ async function persistScanHistory({
   history[documentKey] = [nextEntry, ...dedupedEntries].slice(0, 10);
 
   await chrome.storage.local.set({ [LOCAL_KEYS.scanHistory]: history });
+}
+
+async function fetchDocumentHtml(url) {
+  const controller = new AbortController();
+
+  try {
+    const response = await withTimeout(
+      fetch(url, {
+        redirect: "follow",
+        headers: {
+          Accept: "text/html,application/xhtml+xml"
+        },
+        signal: controller.signal
+      }),
+      DOCUMENT_FETCH_TIMEOUT_MS,
+      () => {
+        controller.abort("timeout");
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Fetch failed with status ${response.status} for ${url}.`);
+    }
+
+    return await withTimeout(
+      response.text(),
+      DOCUMENT_FETCH_TIMEOUT_MS,
+      () => {
+        controller.abort("timeout");
+      }
+    );
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error(`Fetching legal document timed out after 30 seconds for ${url}.`);
+    }
+
+    if (error instanceof Error && error.message === "TIMEOUT") {
+      throw new Error(`Fetching legal document timed out after 30 seconds for ${url}.`);
+    }
+
+    throw error;
+  }
+}
+
+function trimDocumentText(text, maxChars) {
+  if (text.length <= maxChars) {
+    return text;
+  }
+
+  return `${text.slice(0, maxChars)}\n\n[Document trimmed for faster combined analysis.]`;
+}
+
+function limitDocumentsForCombinedAnalysis(documents, maxTotalChars) {
+  let remainingChars = maxTotalChars;
+
+  return documents.map((document, index) => {
+    const reservedForRemainingDocs = Math.max(0, documents.length - index - 1) * 1000;
+    const allowedChars = Math.max(1000, remainingChars - reservedForRemainingDocs);
+    const nextText = trimDocumentText(document.text, allowedChars);
+    remainingChars = Math.max(0, remainingChars - nextText.length);
+    return {
+      ...document,
+      text: nextText
+    };
+  });
+}
+
+function withTimeout(promise, timeoutMs, onTimeout) {
+  let timerId;
+
+  const timeoutPromise = new Promise((_, reject) => {
+    timerId = setTimeout(() => {
+      onTimeout?.();
+      reject(new Error("TIMEOUT"));
+    }, timeoutMs);
+  });
+
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    clearTimeout(timerId);
+  });
+}
+
+function debugLog(settings, event, payload = {}) {
+  if (!settings?.debugMode) {
+    return;
+  }
+
+  console.debug(`[DareToSign Debug] ${event}`, payload);
 }
 
 function normalizeDocumentUrl(url) {

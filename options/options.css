@@ -102,6 +102,15 @@ body {
   color: var(--muted);
 }
 
+.setting-note {
+  margin: -10px 0 20px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(242, 159, 67, 0.12);
+  color: #8a5610;
+  font-size: 14px;
+}
+
 .toggle {
   grid-template-columns: auto 1fr;
   align-items: center;

@@ -75,3 +75,50 @@ Document:
 ${text}
 ---`;
 }
+
+export function buildCombinedPrompt(documents, sensitivity, language = "English") {
+  const categories = CATEGORY_MAP[sensitivity] ?? CATEGORY_MAP.balanced;
+  const documentBlock = documents
+    .map(
+      (document, index) => `Document ${index + 1}
+Title: ${document.title || `Legal document ${index + 1}`}
+URL: ${document.url}
+Content:
+---
+${document.text}
+---`
+    )
+    .join("\n\n");
+
+  return `You are reviewing one or more Terms and Conditions, Privacy Policies, EULAs, or related legal agreements for an ordinary consumer.
+
+Sensitivity level: ${sensitivity.toUpperCase()}
+Respond in: ${language}
+
+Only flag clauses that fit these categories:
+${categories.map((category, index) => `${index + 1}. ${category}`).join("\n")}
+
+Return only a JSON object with this shape:
+{
+  "findings": [
+    {
+      "document_url": string,
+      "category": string,
+      "severity": "high" | "medium" | "low",
+      "clause_excerpt": string,
+      "plain_english": string,
+      "why_it_matters": string
+    }
+  ]
+}
+
+Requirements:
+- No markdown.
+- No explanation outside JSON.
+- Every finding must include the exact document_url of the source document listed below.
+- Keep clause_excerpt under 300 characters.
+- If nothing qualifies, return {"findings":[]}.
+
+Documents:
+${documentBlock}`;
+}

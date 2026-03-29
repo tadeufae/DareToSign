@@ -18,7 +18,6 @@ const els = {
   openOptions: document.getElementById("open-options")
 };
 
-let selectedUrl = "";
 let currentLinks = [];
 let currentTabId = null;
 let activeRequestId = null;
@@ -97,7 +96,6 @@ async function refreshLinks() {
   }
 
   currentLinks = links;
-  selectedUrl = links[0]?.href ?? "";
   renderLinks(links);
   const hasPersistentAnalysisState = await restoreAnalysisState(tab.id);
 
@@ -113,11 +111,13 @@ async function refreshLinks() {
   }
 
   const suffix = settings.settings.autoScan ? " Auto-scan is enabled in settings." : "";
-  setStatus(`${links.length} legal link${links.length === 1 ? "" : "s"} detected.${suffix}`);
+  setStatus(
+    `${links.length} legal link${links.length === 1 ? "" : "s"} detected. All found terms will be analyzed together.${suffix}`
+  );
 }
 
 async function analyzeSelection() {
-  if (!selectedUrl) {
+  if (!currentLinks.length) {
     return;
   }
 
@@ -127,14 +127,14 @@ async function analyzeSelection() {
   updateProgressUi(4, "Queued analysis request.", "info");
   els.analyzeButton.disabled = true;
   els.analyzeButton.textContent = "Analyzing…";
-  setStatus("Fetching document and calling OpenAI…");
+  setStatus("Fetching legal documents and calling OpenAI…");
   els.analysisMeta.textContent = "";
   hideAcceptance();
 
   try {
     const response = await chrome.runtime.sendMessage({
       type: "ANALYZE_URL",
-      url: selectedUrl,
+      urls: currentLinks.map((link) => link.href),
       requestId: activeRequestId,
       tabId: currentTabId
     });
@@ -164,11 +164,10 @@ function renderLinks(links) {
   }
 
   for (const link of links) {
-    const wrapper = document.createElement("label");
-    wrapper.className = `link-item${link.href === selectedUrl ? " selected" : ""}`;
+    const wrapper = document.createElement("div");
+    wrapper.className = "link-item";
     wrapper.innerHTML = `
       <div class="link-pick">
-        <input type="radio" name="selected-link" ${link.href === selectedUrl ? "checked" : ""} />
         <div class="link-copy">
           <p class="link-title">${escapeHtml(link.text || "Untitled document")}</p>
           <details class="link-url-shell">
@@ -179,11 +178,6 @@ function renderLinks(links) {
         </div>
       </div>
     `;
-
-    wrapper.addEventListener("click", () => {
-      selectedUrl = link.href;
-      renderLinks(links);
-    });
 
     els.linkList.appendChild(wrapper);
   }
@@ -353,7 +347,7 @@ async function restoreAnalysisState(tabId) {
   if (analysis.status === "complete") {
     renderResults(analysis.findings ?? [], { hasScanResult: true });
     if (analysis.meta) {
-      els.analysisMeta.textContent = `Model: ${analysis.meta.model} · Sensitivity: ${analysis.meta.sensitivity} · Chunks: ${analysis.meta.chunkCount}`;
+      els.analysisMeta.textContent = `Model: ${analysis.meta.model} · Sensitivity: ${analysis.meta.sensitivity} · Docs: ${analysis.meta.documentCount ?? 1} · Chunks: ${analysis.meta.chunkCount}`;
     }
     renderAcceptance(analysis);
     setStatus("Showing the latest completed analysis for this tab.");
@@ -437,6 +431,11 @@ function renderWaitTimer() {
 }
 
 function renderAcceptance(analysis) {
+  if ((analysis.meta?.documentCount ?? 1) !== 1) {
+    hideAcceptance();
+    return;
+  }
+
   els.acceptShell.hidden = false;
   els.acceptShell.style.display = "grid";
   const isAccepted = Boolean(analysis.meta?.accepted);

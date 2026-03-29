@@ -1,11 +1,13 @@
 const DEFAULT_SETTINGS = {
   apiKey: "",
-  model: "gpt-4o-mini",
+  model: "gpt-4.1-mini",
   sensitivity: "balanced",
   autoScan: false,
   showInlineBadges: true,
-  language: "English"
+  language: "English",
+  debugMode: false
 };
+const OPENAI_TIMEOUT_MS = 60_000;
 
 const form = document.getElementById("settings-form");
 const statusEl = document.getElementById("status");
@@ -19,6 +21,7 @@ async function init() {
   document.getElementById("sensitivity").value = settings.sensitivity;
   document.getElementById("auto-scan").checked = settings.autoScan;
   document.getElementById("show-inline-badges").checked = settings.showInlineBadges;
+  document.getElementById("debug-mode").checked = settings.debugMode;
   document.getElementById("language").value = settings.language;
 }
 
@@ -31,6 +34,7 @@ form.addEventListener("submit", async (event) => {
     sensitivity: document.getElementById("sensitivity").value,
     autoScan: document.getElementById("auto-scan").checked,
     showInlineBadges: document.getElementById("show-inline-badges").checked,
+    debugMode: document.getElementById("debug-mode").checked,
     language: document.getElementById("language").value
   };
 
@@ -49,23 +53,41 @@ form.addEventListener("submit", async (event) => {
 });
 
 async function validateApiKey(apiKey, model) {
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        {
-          role: "user",
-          content: "Reply with the single word VALID."
-        }
-      ],
-      max_completion_tokens: 5
-    })
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    controller.abort("timeout");
+  }, OPENAI_TIMEOUT_MS);
+
+  let response;
+
+  try {
+    response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: "user",
+            content: "Reply with the single word VALID."
+          }
+        ],
+        max_completion_tokens: 5
+      }),
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("OpenAI API key validation timed out after 60 seconds.");
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   if (!response.ok) {
     throw new Error("OpenAI API key validation failed.");

@@ -24,10 +24,14 @@
         <label class="field">
           <span>Model</span>
           <select id="model" name="model">
+            <option value="gpt-4.1-mini">gpt-4.1-mini</option>
+            <option value="gpt-5-mini">gpt-5-mini</option>
+            <option value="gpt-5-nano">gpt-5-nano</option>
             <option value="gpt-4o-mini">gpt-4o-mini</option>
             <option value="gpt-4o">gpt-4o</option>
           </select>
         </label>
+        <p class="setting-note">Recommended default: <code>gpt-4.1-mini</code> for fast, predictable structured extraction. <code>gpt-5-mini</code> and <code>gpt-5-nano</code> remain available, but they can spend output budget on reasoning before emitting JSON.</p>
 
         <label class="field">
           <span>Sensitivity</span>
@@ -42,11 +46,18 @@
           <input id="auto-scan" name="autoScan" type="checkbox" />
           <span>Auto-scan mode</span>
         </label>
+        <p class="setting-note">When enabled, DareToSign will automatically analyze all detected legal links on a page and send them to OpenAI. This can increase usage and cost.</p>
 
         <label class="field toggle">
           <input id="show-inline-badges" name="showInlineBadges" type="checkbox" />
           <span>Show inline badges next to detected legal links</span>
         </label>
+
+        <label class="field toggle">
+          <input id="debug-mode" name="debugMode" type="checkbox" />
+          <span>Debug mode</span>
+        </label>
+        <p class="setting-note">Writes detailed DareToSign logs to Chrome extension DevTools so you can inspect fetch timing, OpenAI response metadata, and parse failures locally.</p>
 
         <label class="field">
           <span>Language</span>
