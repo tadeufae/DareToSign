@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DareToSign</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="hero">
+        <div class="hero-top">
+          <div>
+            <p class="eyebrow">DareToSign</p>
+            <h1>Understand what you’re agreeing to.</h1>
+          </div>
+          <button id="open-options" class="ghost-button" type="button">Settings</button>
+        </div>
+        <p class="subcopy">Fast AI review for terms, privacy, and policy pages on the tab you already have open.</p>
+      </header>
+
+      <section class="panel status-panel">
+        <div class="status-shell">
+          <div class="status-dot" aria-hidden="true"></div>
+          <div>
+            <p class="label">Live Status</p>
+            <p id="status-text" class="status-text">Checking this page…</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <p class="label">Detected Pages</p>
+            <p class="hint">Choose a legal document from this tab.</p>
+          </div>
+          <button id="refresh-links" class="ghost-button" type="button">Refresh</button>
+        </div>
+        <div id="link-list" class="link-list"></div>
+      </section>
+
+      <section class="panel controls">
+        <button id="analyze-button" class="primary-button" type="button" disabled>Analyze selected link</button>
+        <p id="analysis-meta" class="hint"></p>
+        <div id="progress-panel" class="progress-panel" hidden>
+          <div class="progress-head">
+            <p class="label">Live Review</p>
+            <p id="progress-percent" class="progress-percent">0%</p>
+          </div>
+          <div class="progress-track" aria-hidden="true">
+            <div id="progress-fill" class="progress-fill"></div>
+          </div>
+          <p id="progress-status" class="progress-status">Waiting to start…</p>
+          <p id="progress-wait" class="progress-wait" hidden></p>
+          <details id="progress-details" class="progress-details">
+            <summary>Details</summary>
+            <div id="progress-log" class="progress-log"></div>
+          </details>
+        </div>
+      </section>
+
+      <section class="panel results-panel">
+        <div class="section-head">
+          <div>
+            <p class="label">Risk Review</p>
+            <p id="summary-score" class="summary-score">No scan yet.</p>
+          </div>
+        </div>
+        <div id="results-root" class="results-root"></div>
+      </section>
+    </main>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

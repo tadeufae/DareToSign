@@ -1,0 +1,6 @@
+* text=auto eol=lf
+
+# Keep shell scripts normalized for portable execution and clean diffs.
+*.sh text eol=lf
+*.md text eol=lf
+LICENSE text eol=lf

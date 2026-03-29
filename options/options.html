@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DareToSign Settings</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="hero">
+        <div class="hero-chip">Settings</div>
+        <h1>Make the scanner feel like yours.</h1>
+        <p>Manage your OpenAI key, model, and scan behavior. Everything stays local to this Chrome profile.</p>
+      </section>
+
+      <form id="settings-form" class="card">
+        <label class="field">
+          <span>OpenAI API key</span>
+          <input id="api-key" name="apiKey" type="password" placeholder="sk-..." autocomplete="off" />
+          <small>Your key stays in <code>chrome.storage.local</code> on this device and is only used for direct requests to OpenAI.</small>
+        </label>
+
+        <label class="field">
+          <span>Model</span>
+          <select id="model" name="model">
+            <option value="gpt-4o-mini">gpt-4o-mini</option>
+            <option value="gpt-4o">gpt-4o</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span>Sensitivity</span>
+          <select id="sensitivity" name="sensitivity">
+            <option value="lenient">Lenient</option>
+            <option value="balanced">Balanced</option>
+            <option value="paranoid">Paranoid</option>
+          </select>
+        </label>
+
+        <label class="field toggle">
+          <input id="auto-scan" name="autoScan" type="checkbox" />
+          <span>Auto-scan mode</span>
+        </label>
+
+        <label class="field toggle">
+          <input id="show-inline-badges" name="showInlineBadges" type="checkbox" />
+          <span>Show inline badges next to detected legal links</span>
+        </label>
+
+        <label class="field">
+          <span>Language</span>
+          <select id="language" name="language">
+            <option value="English">English</option>
+          </select>
+        </label>
+
+        <div class="actions">
+          <button id="save-button" type="submit">Save settings</button>
+          <p id="status" class="status"></p>
+        </div>
+      </form>
+    </main>
+
+    <script type="module" src="options.js"></script>
+  </body>
+</html>
